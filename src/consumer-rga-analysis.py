@@ -11,7 +11,7 @@ import glob
 from datetime import datetime, timezone
 
 import threading
-from .utils import setup_pika_client, get_raw_data
+from utils import setup_pika_client, get_raw_data
 from dotenv import load_dotenv
 import logging
 
