@@ -29,7 +29,7 @@ ARG repo
 ENV REPO=$repo
 
 # Run our flow script when the container starts
-CMD python /root/consumer-rga-analysis.py
+CMD uv run python /root/consumer-rga-analysis.py
 
 
 
