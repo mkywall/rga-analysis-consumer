@@ -46,7 +46,7 @@ steps:
       - >-
         CRUCIBLE_API_URL='https://crucible.lbl.gov/api/v2',
         RABBITMQ_HOST='10.128.0.31',
-        RABBITMQ_PORT='5672'
+        RABBITMQ_PORT=5672
       - '--set-secrets'
       - >-
         CRUCIBLE_API_KEY=crucible_admin_apikey:latest,
