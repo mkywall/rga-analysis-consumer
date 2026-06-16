@@ -11,7 +11,7 @@ import glob
 from datetime import datetime, timezone
 
 import threading
-from utils import setup_pika_client, get_raw_data
+from utils import setup_pika_client, get_raw_data, get_secret
 from dotenv import load_dotenv
 import logging
 
@@ -21,12 +21,12 @@ logging.basicConfig(level=logging.INFO, format='%(levelname)s - %(message)s')
 
 # Vars ===========================
 load_dotenv()
-rmq_host = os.environ.get("RABBITMQ_HOST", "localhost")
-rmq_port = int(os.environ.get("RABBITMQ_PORT", 5672))
-rmq_pw = os.environ.get("RABBITMQ_DEFAULT_PW", "rabbitmq_default_pw/versions/1")
+rmq_host = os.environ.get("RMQ_HOST", "localhost")
+rmq_port = int(os.environ.get("RMQ_PORT", 5672))
+rmq_pw = get_secret("RABBITMQ_DEFAULT_PW", "rabbitmq_default_pw/versions/1")
 
 crucible_api_url = os.environ.get("CRUCIBLE_API_URL", "https://crucible.lbl.gov/api/v2")
-crucible_api_key = os.environ.get("CRUCIBLE_ADMIN_APIKEY", "crucible_admin_apikey/versions/4")
+crucible_api_key = get_secret("ADMIN_APIKEY", "crucible_admin_apikey/versions/4")
 
 num_cores = os.cpu_count()
 print(f"{num_cores=}")
