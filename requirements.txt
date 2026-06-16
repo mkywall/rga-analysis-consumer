@@ -1,0 +1,20 @@
+# really useful packages
+numpy
+pillow
+mfid
+pandas 
+pyyaml 
+requests 
+pydantic 
+matplotlib 
+joblib
+
+# for the crux
+nano-crucible==2.1.2
+
+# stuff Morgan asked me to add
+google-auth-oauthlib 
+google-auth 
+google-api-python-client 
+pika
+google-cloud-secret-manager

@@ -1,0 +1,31 @@
+substitutions:
+  _IMAGE_PATH: "us-central1-docker.pkg.dev/${PROJECT_ID}/${REPO_NAME}/${TRIGGER_NAME}"
+
+steps:
+  - name: 'gcr.io/cloud-builders/docker'
+    entrypoint: 'bash'
+    args: [-c, 'docker pull ${_IMAGE_PATH}:latest || exit 0']
+  - name: 'gcr.io/cloud-builders/docker'
+    entrypoint: 'bash'
+    args: 
+      - -c
+      - >
+        docker build
+        --build-arg githash=$(git rev-parse HEAD)
+        --build-arg repo=${REPO_NAME}
+        --build-arg devenv=${BRANCH_NAME}
+        -t ${_IMAGE_PATH}:${SHORT_SHA}
+        -t ${_IMAGE_PATH}:latest
+        --cache-from ${_IMAGE_PATH}:latest
+        . 
+  
+  # Push SHA-tagged image
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['push', '${_IMAGE_PATH}:${SHORT_SHA}']
+
+  # Push latest tag
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['push', '${_IMAGE_PATH}:latest']
+
+
+timeout: 600s
