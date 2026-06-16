@@ -28,4 +28,38 @@ steps:
     args: ['push', '${_IMAGE_PATH}:latest']
 
 
+  # Step 3: Deploy to Cloud Run
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk:stable'
+    entrypoint: gcloud
+    args:
+      - 'run'
+      - 'deploy'
+      - '${_SERVICE_NAME}'
+      - '--image'
+      - '${_IMAGE_PATH}:latest'
+      - '--region'
+      - 'us-central1'
+      - '--platform'
+      - 'managed'
+      - '--port=8080'
+      - '--set-env-vars'
+      - >-
+        CRUCIBLE_API_URL='https://crucible.lbl.gov/api/v2',
+        RABBITMQ_HOST='10.128.0.31',
+        RABBITMQ_PORT='5672'
+      - '--set-secrets'
+      - >-
+        CRUCIBLE_API_KEY=crucible_admin_apikey:latest,
+        RABBITMQ_DEFAULT_PW=rabbitmq_default_pw:latest
+      - '--allow-unauthenticated'
+
+substitutions:
+  _SERVICE_NAME: 'rga-analysis-consumer'
+  _REGION: 'us-central1'
+  _IMAGE_PATH: '${_REGION}-docker.pkg.dev/${PROJECT_ID}/${REPO_NAME}/${BRANCH_NAME}'
+  _SERVICE_URL: 'https://${_SERVICE_NAME}-${PROJECT_NUMBER}.us-central1.run.app'
+
+images:
+  - '${_IMAGE_PATH}'
+
 timeout: 600s
