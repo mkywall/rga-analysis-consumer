@@ -122,22 +122,27 @@ def run_rga_analysis(ch, method, body, connection):
         # run Kas's analysis script
         import automated_RGA_TEY_kas_20260126
         automated_RGA_TEY_kas_20260126.main(directory)
+        logger.info("Analysis script complete")
 
         # upload to crucible -  following Ed's workflow
+        logger.info('Fetching existing child map...')
         sample_sub_dataset_id_map = fetch_existing_child_map(client, raw_mfid)
         sample_dictionary = og_dataset['scientific_metadata']['samples']
         sample_positions = list(sample_dictionary.keys())
 
+        logger.info(f"Creating sample datasets...")
         with ThreadPoolExecutor(max_workers=8) as executor:
             child_results = list(executor.map(
                         lambda sample_position: create_sample_dataset(sample_dictionary[sample_position], sample_position, og_dataset, directory, client, sample_sub_dataset_id_map),
                         sample_positions,
                     ))
 
+        logger.info(f'Crucible upload complete.')
         # acknowledge the message                                                                          
         connection.add_callback_threadsafe(lambda: ch.basic_ack(delivery_tag=method.delivery_tag))     
     
     except Exception as err:
+        logger.error(f"Error processing dataset {raw_mfid}: {err}")
         def on_failure():
             ch.basic_publish(                                                                                                                          
                 exchange='',                                                                                                                           
