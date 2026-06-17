@@ -54,7 +54,7 @@ def fetch_existing_child_map(crucible_client, parent_id):
     return dict(results)
 
 
-def create_sample_dataset(sample_entry, spot, ds, directory, crucible_client, sample_sub_dataset_id_map):
+def create_sample_dataset(sample_entry, spot, ds, directory, crucible_client, sample_sub_dataset_id_map, area_by_sample):
     sample_id = sample_entry["sample_id"]
     sample_name = sample_entry["sample_name"]
 
@@ -85,6 +85,18 @@ def create_sample_dataset(sample_entry, spot, ds, directory, crucible_client, sa
 
     crucible_client.datasets.link_parent_child(ds['unique_id'], sds.unique_id)
     crucible_client.samples.add_dataset(sample_id, sds.unique_id)
+
+    # Record the corrected outgassing area on the sample's scientific metadata
+    outgas_area = area_by_sample.get(sample_name) if area_by_sample else None
+    if outgas_area is not None:
+        md = {
+            'outgas_area': float(outgas_area),
+            'outgas_area_analysis_reference': f'dataset: {sds.unique_id}',
+        }
+        crucible_client.samples.update_scientific_metadata(sample_id, metadata=md)
+        logger.info(f"  [{spot}] {sample_name} outgas_area={outgas_area:.3e} → sample {sample_id}")
+    else:
+        logger.warning(f"  [{spot}] {sample_name} no outgas_area found, skipping metadata update")
 
     thumbnail_names = [
         f"MS/{sample_name}_MS_log.png",
@@ -120,8 +132,8 @@ def run_rga_analysis(ch, method, body, connection):
         data_zip, directory = get_raw_data(client, raw_mfid)
 
         # run Kas's analysis script
-        import automated_RGA_TEY_kas_20260126
-        automated_RGA_TEY_kas_20260126.main(directory)
+        import src.automated_RGA_TEY_clab_bkgd as automated_RGA_TEY_clab_bkgd
+        area_by_sample = automated_RGA_TEY_clab_bkgd.main(directory)
         logger.info("Analysis script complete")
 
         # upload to crucible -  following Ed's workflow
@@ -133,7 +145,7 @@ def run_rga_analysis(ch, method, body, connection):
         logger.info(f"Creating sample datasets...")
         with ThreadPoolExecutor(max_workers=8) as executor:
             child_results = list(executor.map(
-                        lambda sample_position: create_sample_dataset(sample_dictionary[sample_position], sample_position, og_dataset, directory, client, sample_sub_dataset_id_map),
+                        lambda sample_position: create_sample_dataset(sample_dictionary[sample_position], sample_position, og_dataset, directory, client, sample_sub_dataset_id_map, area_by_sample),
                         sample_positions,
                     ))
 

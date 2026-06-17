@@ -9,6 +9,8 @@ import numpy as np
 from datetime import datetime
 import zipfile
 from collections import defaultdict
+from scipy.integrate import trapezoid
+from scipy.interpolate import interp1d
 
 def make_subfolders(output_folder_ascii):
     #output_folder_ascii = os.path.join(folder_path, "Analysis_results-ascii")
@@ -57,6 +59,11 @@ def convert_time_to_seconds(time_str_array):
 BEAM_ON_USED_S          = 30.0  # how many seconds of beam-on intervals to include for determining values for RGA spectrum
 BEAM_OFF_BEFORE_S       = 20.0  # how many seconds (before beam-on) to exclude for the first beam-off region
 BEAM_OFF_AFTER_S        = 30.0  # how many seconds (after beam-on) to exclude for the second beam-off region
+
+# clabs-style fixed beam-off background windows (verbatim port of crucible-labs RGAMeasurement.background_correct)
+WINDOW_S                = 30.0  # duration (s) of each beam-off background window
+GAP_BEFORE_S            = 5.0   # gap (s) between the pre-shutter window end and shutter open
+GAP_AFTER_S             = 10.0  # gap (s) between shutter close and the post-shutter window start
 
 def get_beam_intervals_in_seconds(time_array, beam_on_indices,BEAM_ON_USED_S=BEAM_ON_USED_S,BEAM_OFF_BEFORE_S=BEAM_OFF_BEFORE_S,BEAM_OFF_AFTER_S=BEAM_OFF_AFTER_S):
     """
@@ -184,6 +191,130 @@ def process_and_plot_column(data, column_to_plot, sample_name, beam_on_indices):
     std_value = np.std(data_beam_off)
         
     return beam_on_interval, beam_off1_interval, beam_off2_interval, [avg_value], [std_value], time_array, corrected_data
+
+
+def background_correct(pressure, time, tey_time, shutter,
+                       window=WINDOW_S, gap_before=GAP_BEFORE_S, gap_after=GAP_AFTER_S):
+    """Per-channel linear background subtraction.
+
+    Verbatim port of crucible-labs RGAMeasurement.background_correct: detects the
+    first shutter open/close edges, selects two fixed-duration beam-off windows
+    anchored to those edges, fits a linear baseline per m/z channel, and subtracts
+    it across the whole trace.
+
+    Parameters
+    ----------
+    pressure : np.ndarray (T, M)   raw partial pressures (Torr)
+    time     : np.ndarray (T,)     RGA time axis (s)
+    tey_time : np.ndarray (Ttey,)  TEY time axis (s)
+    shutter  : np.ndarray (Ttey,)  1 = beam on, 0 = beam off
+
+    Returns
+    -------
+    corrected  : np.ndarray (T, M) background-corrected pressures
+    open_time  : float             first shutter-open time (s)
+    close_time : float             first shutter-close time (s)
+    off1, off2 : (float, float)    (start, end) of the two beam-off windows (s)
+    """
+    edges     = np.diff(shutter.astype(int))
+    open_idx  = np.where(edges > 0)[0]
+    close_idx = np.where(edges < 0)[0]
+    if len(open_idx) == 0 or len(close_idx) == 0:
+        raise ValueError("Could not detect shutter open/close edges.")
+
+    open_time  = tey_time[open_idx[0] + 1]
+    close_time = tey_time[close_idx[0]]
+
+    # Pre-shutter window: ends gap_before before open, spans window seconds
+    off1_end   = open_time  - gap_before
+    off1_start = off1_end   - window
+    off1_mask  = (time >= off1_start) & (time <= off1_end)
+
+    # Post-shutter window: starts gap_after after close, spans window seconds
+    off2_start = close_time + gap_after
+    off2_end   = off2_start + window
+    off2_mask  = (time >= off2_start) & (time <= off2_end)
+
+    if off1_mask.sum() + off2_mask.sum() < 2:
+        raise ValueError(
+            "Not enough beam-off points for background fit. "
+            "Increase WINDOW_S or reduce GAP_BEFORE_S/GAP_AFTER_S."
+        )
+
+    bg_mask = off1_mask | off2_mask
+    x_bg    = time[bg_mask]
+
+    corrected = np.zeros_like(pressure)
+    for mz_idx in range(pressure.shape[1]):
+        col    = pressure[:, mz_idx]
+        coeffs = np.polyfit(x_bg, col[bg_mask], 1)
+        corrected[:, mz_idx] = col - np.polyval(coeffs, time)
+
+    return corrected, open_time, close_time, (off1_start, off1_end), (off2_start, off2_end)
+
+
+def compute_area(pressure_corrected, exp_time, actual_open_time, actual_close_time):
+    """Integrated outgassing area: sum over m/z, then trapezoid in time over the
+    [open, close] window. Boundary pressures are interpolated at the exact times."""
+    total_pressure = np.sum(pressure_corrected, axis=0)  # sum over m/z (axis 0)
+
+    # Interpolate to get pressure exactly at shutter open/close times
+    interp_func = interp1d(exp_time, total_pressure, kind='linear')
+    p_at_open   = float(interp_func(actual_open_time))
+    p_at_close  = float(interp_func(actual_close_time))
+
+    # Build ROI: exact boundary points + all RGA points in between
+    mask    = (exp_time > actual_open_time) & (exp_time < actual_close_time)
+    t_inner = exp_time[mask]
+    p_inner = total_pressure[mask]
+
+    t_roi = np.concatenate([[actual_open_time],  t_inner, [actual_close_time]])
+    p_roi = np.concatenate([[p_at_open],         p_inner, [p_at_close]]).clip(min=0)
+
+    area = trapezoid(p_roi, t_roi)
+    return area
+
+
+def save_outgassing_area(sample_outgassing, sample_groups, output_dir):
+    """Write per-sample outgassing area and a per-group average.
+
+    Reads the 'area' field from each entry of sample_outgassing and writes:
+      - outgassing_area.txt           (sample_name, group_name, area)
+      - outgassing_area_averaged.txt  (group_name, mean area, std area)
+    """
+    os.makedirs(output_dir, exist_ok=True)
+
+    sample_to_group = {}
+    for group, samples in sample_groups.items():
+        for s in samples:
+            sample_to_group[s] = group
+
+    rows = []
+    for sample_name, vals in sample_outgassing.items():
+        rows.append({
+            "sample_name": sample_name,
+            "group_name": sample_to_group.get(sample_name, ""),
+            "outgassing_area(Torr*s)": vals.get("area", np.nan),
+        })
+    area_path = os.path.join(output_dir, "outgassing_area.txt")
+    pd.DataFrame(rows).to_csv(area_path, sep="\t", index=False, float_format="%.6e")
+    print(f"Saved: {area_path}")
+
+    grp_rows = []
+    for group, samples in sample_groups.items():
+        areas = [sample_outgassing[s]["area"] for s in samples
+                 if s in sample_outgassing and "area" in sample_outgassing[s]]
+        if not areas:
+            continue
+        grp_rows.append({
+            "group_name": group,
+            "mean_area(Torr*s)": np.mean(areas),
+            "std_area(Torr*s)": np.std(areas, ddof=0),
+        })
+    grp_path = os.path.join(output_dir, "outgassing_area_averaged.txt")
+    pd.DataFrame(grp_rows).to_csv(grp_path, sep="\t", index=False, float_format="%.6e")
+    print(f"Saved: {grp_path}")
+
 
 def compress_folder(base_folder):
     # Subfolders to compress
