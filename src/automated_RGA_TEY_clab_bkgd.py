@@ -315,65 +315,66 @@ def main(directory = './', SAVE_IMAGES = True):
         sample_name = extract_sample_name(rga_file)
         print(f"Processing sample: {sample_name}")
         
-        # Determine beam-on indices based on TEY and RGA files
-        beam_on_indices = determine_intervals(TEY_file_path, rga_file_path)
-        
-        # Load RGA data
+        # Load RGA + TEY data
         rga_data = np.genfromtxt(rga_file_path, delimiter='\t', skip_header=2, dtype=str)
         ncols = rga_data.shape[1]  # total columns; first column is time, remaining are m/z channels
-        
-        # Plot total raw sum (no background subtraction)
-        #plot_all_columns_and_sum(rga_data, sample_name)
-        
+        tey = np.loadtxt(TEY_file_path, skiprows=1, delimiter='\t', dtype=float)
+
+        time_array = convert_time_to_seconds(rga_data[:, 0])
+        pressure   = rga_data[:, 1:].astype(float)   # (T, M)
+
+        # clabs-style background subtraction (fixed beam-off windows anchored to shutter edges)
+        corrected, open_time, close_time, off1, off2 = background_correct(
+            pressure, time_array, tey[:, 0], tey[:, 2],
+            window=WINDOW_S, gap_before=GAP_BEFORE_S, gap_after=GAP_AFTER_S,
+        )
+
+        off1_mask = (time_array >= off1[0]) & (time_array <= off1[1])
+        off2_mask = (time_array >= off2[0]) & (time_array <= off2[1])
+        on_mask   = (time_array >= open_time) & (time_array <= open_time + BEAM_ON_USED_S)
+        beam_off_mask = off1_mask | off2_mask
+
         # Prepare placeholders for outgassing averages
         outgassing_avg_list = []
         outgassing_std_list = []
-        
-        # We'll also keep a running sum of the background-corrected data for each time point
-        # so we can have a "sum-of-all-channels" background-corrected trace.
-        # Initialize after we know the time array from the first channel.
+
+        # Running sum of background-corrected data across all channels
         sum_corrected_data = None
-        sum_beam_on_interval = None
-        sum_beam_off1_interval = None
-        sum_beam_off2_interval = None
-        
+
         # Process each mass channel and collect outgassing + ion signal data
         sample_ion[sample_name] = {}
         for col in range(1, ncols):
-            (beam_on_interval, beam_off1_interval, beam_off2_interval,
-                avg_values, std_values, time_array, corrected_data) = process_and_plot_column(rga_data, col, sample_name, beam_on_indices)
-            
-            outgassing_avg_list.append(avg_values[0])
-            outgassing_std_list.append(std_values[0])
+            corrected_data = corrected[:, col - 1]
+            avg_value = np.mean(corrected_data[on_mask])
+            std_value = np.std(corrected_data[beam_off_mask])
 
-            #print(outgassing_avg_list)
-            
+            outgassing_avg_list.append(avg_value)
+            outgassing_std_list.append(std_value)
+
             # Store the time + corrected data for individual sample, per m/z
             # As requested: time(s), corrected ion signal, and repeated std
-            # (the same std_value for each time point)
-            data_with_std = np.column_stack((
-                time_array, 
-                corrected_data, 
-                np.full_like(corrected_data, std_values[0])
-            ))
-            
-            # Store in the dictionary
-            sample_ion[sample_name][col] = (time_array, corrected_data,np.full_like(corrected_data, std_values[0]))
-            
+            sample_ion[sample_name][col] = (
+                time_array, corrected_data, np.full_like(corrected_data, std_value)
+            )
+
             # Accumulate the sum
             if sum_corrected_data is None:
                 sum_corrected_data = np.copy(corrected_data)
-                sum_beam_on_interval = beam_on_interval
-                sum_beam_off1_interval = beam_off1_interval
-                sum_beam_off2_interval = beam_off2_interval
             else:
                 sum_corrected_data += corrected_data
-        
+
         # After processing all columns, store the average outgassing data
         sample_outgassing[sample_name] = {
             'avg': np.array(outgassing_avg_list),  # shape (n_mz_channels,)
             'std': np.array(outgassing_std_list)
         }
+
+        # Integrated outgassing area over the full shutter open->close window
+        area_open  = max(open_time,  time_array[0])
+        area_close = min(close_time, time_array[-1])
+        sample_outgassing[sample_name]['area'] = compute_area(
+            corrected.T, time_array, area_open, area_close
+        )
         
         # Save individual sample outgassing data (average + std across m/z)
         # i.e. the typical "mass_number, avg, std"
@@ -391,19 +392,11 @@ def main(directory = './', SAVE_IMAGES = True):
         # ======= Also save the sum of the corrected data for each sample =======
         if sum_corrected_data is not None:
             # Compute a single standard deviation from beam-off region of the sum
-            sum_data_beam_off = np.concatenate((
-                sum_corrected_data[sum_beam_off1_interval[0]:sum_beam_off1_interval[1]],
-                sum_corrected_data[sum_beam_off2_interval[0]:sum_beam_off2_interval[1]]
-            ))
+            sum_data_beam_off = sum_corrected_data[beam_off_mask]
             sum_std_value = np.std(sum_data_beam_off)
-            sum_data_with_std = np.column_stack((
-                time_array, 
-                sum_corrected_data, 
-                np.full_like(sum_corrected_data, sum_std_value)
-            ))
-            
+
             # Also store average over beam on region, and that std, in sample_outgassing:
-            sum_data_beam_on = sum_corrected_data[sum_beam_on_interval[0]: sum_beam_on_interval[1]]
+            sum_data_beam_on = sum_corrected_data[on_mask]
             sum_avg_value = np.mean(sum_data_beam_on)
             sample_outgassing[sample_name]['sum_avg'] = sum_avg_value
             sample_outgassing[sample_name]['sum_std'] = sum_std_value
@@ -420,6 +413,7 @@ def main(directory = './', SAVE_IMAGES = True):
     save_grouped_mass_spectra(sample_outgassing, os.path.join(output_folder,'MS_averaged'),sample_groups)
     save_grouped_sample_ion_to_txt(sample_ion,os.path.join(output_folder,'MS(t)_averaged'),sample_groups)
     save_grouped_sample_ion_to_total_outgassing_txt(sample_ion,os.path.join(output_folder,'Total_outgassing_averaged'),sample_groups)
+    save_outgassing_area(sample_outgassing, sample_groups, os.path.join(output_folder,'Outgassing_area'))
 
     if SAVE_IMAGES:
         input_folder1 = output_folder+ "/TEY_normalized"
@@ -434,6 +428,14 @@ def main(directory = './', SAVE_IMAGES = True):
         plot_MS_from_folder(os.path.join(output_folder,'MS_averaged'),output_folder_plots+"/MS_averaged")
         plot_total_outgassing_from_folder(os.path.join(output_folder,'Total_outgassing_averaged'),output_folder_plots+"/Total_outgassing_averaged")
         plot_MS_t_from_folder(os.path.join(output_folder,'MS(t)_averaged'),output_folder_plots+"/MS(t)_averaged")
+
+    # Per-sample outgassing areas (Torr*s) for downstream metadata updates
+    area_by_sample = {
+        name: float(vals['area'])
+        for name, vals in sample_outgassing.items()
+        if 'area' in vals
+    }
+    return area_by_sample
 
 if __name__ == "__main__":
     main()
