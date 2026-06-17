@@ -11,7 +11,7 @@ import glob
 from datetime import datetime, timezone
 
 import threading
-from utils import setup_pika_client, get_raw_data
+from utils import setup_pika_client, get_raw_data, get_secret
 from dotenv import load_dotenv
 import logging
 
@@ -21,12 +21,12 @@ logging.basicConfig(level=logging.INFO, format='%(levelname)s - %(message)s')
 
 # Vars ===========================
 load_dotenv()
-rmq_host = os.environ.get("RABBITMQ_HOST", "localhost")
-rmq_port = int(os.environ.get("RABBITMQ_PORT", 5672))
-rmq_pw = os.environ.get("RABBITMQ_DEFAULT_PW", "rabbitmq_default_pw/versions/1")
+rmq_host = os.environ.get("RMQ_HOST", "localhost")
+rmq_port = int(os.environ.get("RMQ_PORT", 5672))
+rmq_pw = get_secret("RABBITMQ_DEFAULT_PW", "rabbitmq_default_pw/versions/1")
 
 crucible_api_url = os.environ.get("CRUCIBLE_API_URL", "https://crucible.lbl.gov/api/v2")
-crucible_api_key = os.environ.get("CRUCIBLE_ADMIN_APIKEY", "crucible_admin_apikey/versions/4")
+crucible_api_key = get_secret("ADMIN_APIKEY", "crucible_admin_apikey/versions/4")
 
 num_cores = os.cpu_count()
 print(f"{num_cores=}")
@@ -54,17 +54,17 @@ def fetch_existing_child_map(crucible_client, parent_id):
     return dict(results)
 
 
-def create_sample_dataset(sample_entry, spot, ds, directory, crucible_client, sample_sub_dataset_id_map):
+def create_sample_dataset(sample_entry, spot, ds, directory, crucible_client, sample_sub_dataset_id_map, area_by_sample):
     sample_id = sample_entry["sample_id"]
     sample_name = sample_entry["sample_name"]
 
     sds_mfid = sample_sub_dataset_id_map.get(sample_name, mfid.mfid()[0])
 
     sds = Dataset(unique_id = sds_mfid,
-                  dataset_name = f"RGATEY_{ds.dataset_name}_{spot}_{sample_name}",
+                  dataset_name = f"RGATEY_{ds['dataset_name']}_{spot}_{sample_name}",
                   instrument_name = "ALS-BL12012",
                   measurement = "automated_RGA_TEY_run", # TODO - swap to RGA/TEY?
-                  project_id = "10k_perovskites",
+                  project_id = ds['project_id'],   # use project_id of the parent
                   data_type = "automated_RGA_TEY_run")
 
     sample_files = glob.glob(os.path.join(directory, f"{sample_name}_*.txt"))
@@ -83,8 +83,20 @@ def create_sample_dataset(sample_entry, spot, ds, directory, crucible_client, sa
 
     crucible_client.datasets.create(sds, files_to_upload=sample_files, wait_for_ingestion_response=False)
 
-    crucible_client.datasets.link_parent_child(ds.unique_id, sds.unique_id)
+    crucible_client.datasets.link_parent_child(ds['unique_id'], sds.unique_id)
     crucible_client.samples.add_dataset(sample_id, sds.unique_id)
+
+    # Record the corrected outgassing area on the sample's scientific metadata
+    outgas_area = area_by_sample.get(sample_name) if area_by_sample else None
+    if outgas_area is not None:
+        md = {
+            'outgas_area': float(outgas_area),
+            'outgas_area_analysis_reference': f'dataset: {sds.unique_id}',
+        }
+        crucible_client.samples.update_scientific_metadata(sample_id, metadata=md)
+        logger.info(f"  [{spot}] {sample_name} outgas_area={outgas_area:.3e} → sample {sample_id}")
+    else:
+        logger.warning(f"  [{spot}] {sample_name} no outgas_area found, skipping metadata update")
 
     thumbnail_names = [
         f"MS/{sample_name}_MS_log.png",
@@ -120,24 +132,29 @@ def run_rga_analysis(ch, method, body, connection):
         data_zip, directory = get_raw_data(client, raw_mfid)
 
         # run Kas's analysis script
-        import automated_RGA_TEY_kas_20260126
-        automated_RGA_TEY_kas_20260126.main(directory)
+        import src.automated_RGA_TEY_clab_bkgd as automated_RGA_TEY_clab_bkgd
+        area_by_sample = automated_RGA_TEY_clab_bkgd.main(directory)
+        logger.info("Analysis script complete")
 
         # upload to crucible -  following Ed's workflow
+        logger.info('Fetching existing child map...')
         sample_sub_dataset_id_map = fetch_existing_child_map(client, raw_mfid)
         sample_dictionary = og_dataset['scientific_metadata']['samples']
         sample_positions = list(sample_dictionary.keys())
 
+        logger.info(f"Creating sample datasets...")
         with ThreadPoolExecutor(max_workers=8) as executor:
             child_results = list(executor.map(
-                        lambda sample_position: create_sample_dataset(sample_dictionary[sample_position], sample_position, og_dataset, directory, client, sample_sub_dataset_id_map),
+                        lambda sample_position: create_sample_dataset(sample_dictionary[sample_position], sample_position, og_dataset, directory, client, sample_sub_dataset_id_map, area_by_sample),
                         sample_positions,
                     ))
 
+        logger.info(f'Crucible upload complete.')
         # acknowledge the message                                                                          
         connection.add_callback_threadsafe(lambda: ch.basic_ack(delivery_tag=method.delivery_tag))     
     
     except Exception as err:
+        logger.error(f"Error processing dataset {raw_mfid}: {err}")
         def on_failure():
             ch.basic_publish(                                                                                                                          
                 exchange='',                                                                                                                           

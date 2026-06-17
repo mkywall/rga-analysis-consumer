@@ -1,13 +1,15 @@
 substitutions:
-  _IMAGE_PATH: "us-central1-docker.pkg.dev/${PROJECT_ID}/${REPO_NAME}/${TRIGGER_NAME}"
+  _IMAGE_PATH: "us-central1-docker.pkg.dev/${PROJECT_ID}/${REPO_NAME}/${BRANCH_NAME}"
 
 steps:
+  # Pull latest for caching
   - name: 'gcr.io/cloud-builders/docker'
     entrypoint: 'bash'
     args: [-c, 'docker pull ${_IMAGE_PATH}:latest || exit 0']
+
   - name: 'gcr.io/cloud-builders/docker'
     entrypoint: 'bash'
-    args: 
+    args:
       - -c
       - >
         docker build
@@ -17,8 +19,8 @@ steps:
         -t ${_IMAGE_PATH}:${SHORT_SHA}
         -t ${_IMAGE_PATH}:latest
         --cache-from ${_IMAGE_PATH}:latest
-        . 
-  
+        .
+
   # Push SHA-tagged image
   - name: 'gcr.io/cloud-builders/docker'
     args: ['push', '${_IMAGE_PATH}:${SHORT_SHA}']
@@ -27,39 +29,25 @@ steps:
   - name: 'gcr.io/cloud-builders/docker'
     args: ['push', '${_IMAGE_PATH}:latest']
 
-
-  # Step 3: Deploy to Cloud Run
-  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk:stable'
-    entrypoint: gcloud
+  # Apply the deployment
+  - name: 'gcr.io/cloud-builders/kubectl'
     args:
-      - 'run'
-      - 'deploy'
-      - '${_SERVICE_NAME}'
-      - '--image'
-      - '${_IMAGE_PATH}:latest'
-      - '--region'
-      - 'us-central1'
-      - '--platform'
-      - 'managed'
-      - '--port=8080'
-      - '--set-env-vars'
-      - >-
-        CRUCIBLE_API_URL='https://crucible.lbl.gov/api/v2',
-        RABBITMQ_HOST='10.128.0.31',
-        RABBITMQ_PORT=5672
-      - '--set-secrets'
-      - >-
-        CRUCIBLE_API_KEY=crucible_admin_apikey:latest,
-        RABBITMQ_DEFAULT_PW=rabbitmq_default_pw:latest
-      - '--allow-unauthenticated'
+    - apply
+    - -f
+    - ./k8s-conf-${BRANCH_NAME}.yaml
+    env:
+    - CLOUDSDK_COMPUTE_REGION=us-central1
+    - CLOUDSDK_CONTAINER_CLUSTER=crucible-cluster
 
-substitutions:
-  _SERVICE_NAME: 'rga-analysis-consumer'
-  _REGION: 'us-central1'
-  _IMAGE_PATH: '${_REGION}-docker.pkg.dev/${PROJECT_ID}/${REPO_NAME}/${BRANCH_NAME}'
-  _SERVICE_URL: 'https://${_SERVICE_NAME}-${PROJECT_NUMBER}.us-central1.run.app'
-
-images:
-  - '${_IMAGE_PATH}'
+  # Roll out the new image
+  - name: 'gcr.io/cloud-builders/kubectl'
+    args:
+    - set
+    - image
+    - deployment/rga-analysis-consumer
+    - rga-analysis-consumer=${_IMAGE_PATH}:${SHORT_SHA}
+    env:
+    - CLOUDSDK_COMPUTE_REGION=us-central1
+    - CLOUDSDK_CONTAINER_CLUSTER=crucible-cluster
 
 timeout: 600s
