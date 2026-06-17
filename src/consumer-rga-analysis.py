@@ -132,7 +132,7 @@ def run_rga_analysis(ch, method, body, connection):
         data_zip, directory = get_raw_data(client, raw_mfid)
 
         # run Kas's analysis script
-        import src.automated_RGA_TEY_clab_bkgd as automated_RGA_TEY_clab_bkgd
+        import automated_RGA_TEY_clab_bkgd as automated_RGA_TEY_clab_bkgd
         area_by_sample = automated_RGA_TEY_clab_bkgd.main(directory)
         logger.info("Analysis script complete")
 
