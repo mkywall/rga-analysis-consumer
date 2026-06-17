@@ -64,7 +64,7 @@ def create_sample_dataset(sample_entry, spot, ds, directory, crucible_client, sa
                   dataset_name = f"RGATEY_{ds.dataset_name}_{spot}_{sample_name}",
                   instrument_name = "ALS-BL12012",
                   measurement = "automated_RGA_TEY_run", # TODO - swap to RGA/TEY?
-                  project_id = "10k_perovskites",
+                  project_id = ds.project_id,   # use project_id of the parent
                   data_type = "automated_RGA_TEY_run")
 
     sample_files = glob.glob(os.path.join(directory, f"{sample_name}_*.txt"))
