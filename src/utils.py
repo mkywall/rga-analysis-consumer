@@ -113,7 +113,7 @@ def get_raw_data(client, raw_mfid):
     try:
         extracted_path = os.path.basename(data_zip).rstrip(".zip")
         with zipfile.ZipFile(data_zip, 'r') as zf:
-            zf.extractall(extracted_path)
+            zf.extractall()
 
     except Exception as e:
         logger.error(f'Error unzipping file: {e}')
