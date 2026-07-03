@@ -290,14 +290,33 @@ def main(directory = './', SAVE_IMAGES = True):
 
     print("Done! Results saved to 'TEY_at_t0.txt'.")
 
-    # Scan folder for TEY and RGA files
+    # Scan folder for TEY and RGA files, then pair them by sample name
     TEY_files = [f for f in os.listdir(directory) if f.endswith(".txt") and "_TEY_" in f]
     rga_files = [f for f in os.listdir(directory) if f.endswith(".txt") and "_RGA_" in f]
-    TEY_files.sort()
-    rga_files.sort()
 
-    if len(TEY_files) != len(rga_files):
-        raise ValueError(f"Mismatch in file counts: {len(TEY_files)} TEY files vs {len(rga_files)} RGA files.")
+    # Group files per sample so each sample can be validated independently
+    tey_by_sample = {}
+    for f in TEY_files:
+        tey_by_sample.setdefault(extract_sample_name(f), []).append(f)
+    rga_by_sample = {}
+    for f in rga_files:
+        rga_by_sample.setdefault(extract_sample_name(f), []).append(f)
+
+    # Keep only samples with exactly one TEY and one RGA file; skip the rest
+    sample_pairs = {}  # sample_name -> (rga_file, TEY_file)
+    for sample_name in sorted(set(tey_by_sample) | set(rga_by_sample)):
+        tey_matches = tey_by_sample.get(sample_name, [])
+        rga_matches = rga_by_sample.get(sample_name, [])
+        if len(tey_matches) == 1 and len(rga_matches) == 1:
+            sample_pairs[sample_name] = (rga_matches[0], tey_matches[0])
+        else:
+            print(
+                f"⚠ Skipping sample '{sample_name}': expected exactly 1 TEY and 1 RGA file, "
+                f"found {len(tey_matches)} TEY and {len(rga_matches)} RGA."
+            )
+
+    if not sample_pairs:
+        raise ValueError("No samples with a valid TEY/RGA pair were found.")
 
     # Dictionaries to store per-sample data
     sample_outgassing = {}  # sample_name -> {'avg': array, 'std': array, 'sum_avg': float, 'sum_std': float}
@@ -307,12 +326,10 @@ def main(directory = './', SAVE_IMAGES = True):
 
 
     # Process each sample (each pair of TEY and RGA files)
-    for rga_file, TEY_file in zip(rga_files, TEY_files):
+    for sample_name, (rga_file, TEY_file) in sample_pairs.items():
         rga_file_path = os.path.join(directory, rga_file)
         TEY_file_path = os.path.join(directory, TEY_file)
-        
-        # Extract sample name from the file name
-        sample_name = extract_sample_name(rga_file)
+
         print(f"Processing sample: {sample_name}")
         
         # Load RGA + TEY data
