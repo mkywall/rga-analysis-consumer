@@ -112,14 +112,14 @@ def get_raw_data(client, raw_mfid):
         return
     
     try:
-        extracted_path = os.path.basename(data_zip).rstrip(".zip")
+        extracted_path = os.path.basename(data_zip).removesuffix(".zip")
         with zipfile.ZipFile(data_zip, 'r') as zf:
             zf.extractall(extracted_path)
 
         subfolder_name = Path(extracted_path).stem
         if subfolder_name in os.listdir(extracted_path):
             extracted_path = f'{extracted_path}/{subfolder_name}'
-        logger.info(f'Found subfolder in extract_path directory: updating directory to {extracted_path=}')
+            logger.info(f'Found subfolder in extract_path directory: updating directory to {extracted_path=}')
 
     except Exception as e:
         logger.error(f'Error unzipping file: {e}')

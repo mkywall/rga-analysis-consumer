@@ -302,21 +302,30 @@ def main(directory = './', SAVE_IMAGES = True):
     for f in rga_files:
         rga_by_sample.setdefault(extract_sample_name(f), []).append(f)
 
-    # Keep only samples with exactly one TEY and one RGA file; skip the rest
+    # Each sample must have exactly one TEY and one RGA file
     sample_pairs = {}  # sample_name -> (rga_file, TEY_file)
+    invalid_samples = {}  # sample_name -> (rga_files, TEY_files)
     for sample_name in sorted(set(tey_by_sample) | set(rga_by_sample)):
         tey_matches = tey_by_sample.get(sample_name, [])
         rga_matches = rga_by_sample.get(sample_name, [])
         if len(tey_matches) == 1 and len(rga_matches) == 1:
             sample_pairs[sample_name] = (rga_matches[0], tey_matches[0])
         else:
-            print(
-                f"⚠ Skipping sample '{sample_name}': expected exactly 1 TEY and 1 RGA file, "
-                f"found {len(tey_matches)} TEY and {len(rga_matches)} RGA."
-            )
+            invalid_samples[sample_name] = (rga_matches, tey_matches)
 
-    if not sample_pairs:
-        raise ValueError("No samples with a valid TEY/RGA pair were found.")
+    if invalid_samples:
+        summary_lines = [
+            f"Found {len(invalid_samples)} sample(s) without exactly 1 TEY and 1 RGA file:"
+        ]
+        for sample_name, (rga_matches, tey_matches) in invalid_samples.items():
+            summary_lines.append(
+                f"  - '{sample_name}': {len(rga_matches)} RGA, {len(tey_matches)} TEY"
+            )
+            for f in sorted(rga_matches) + sorted(tey_matches):
+                summary_lines.append(f"      {f}")
+        summary = "\n".join(summary_lines)
+        print(summary)
+        raise ValueError(summary)
 
     # Dictionaries to store per-sample data
     sample_outgassing = {}  # sample_name -> {'avg': array, 'std': array, 'sum_avg': float, 'sum_std': float}

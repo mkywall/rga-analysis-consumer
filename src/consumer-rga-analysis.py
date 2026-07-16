@@ -58,12 +58,6 @@ def create_sample_dataset(sample_entry, spot, ds, directory, crucible_client, sa
     sample_id = sample_entry["sample_id"]
     sample_name = sample_entry["sample_name"]
 
-    # Skip samples the analysis did not process (missing pair or too many files);
-    # area_by_sample holds only successfully processed samples.
-    if not area_by_sample or sample_name not in area_by_sample:
-        logger.warning(f"  [{spot}] {sample_name} was skipped by analysis, not uploading to Crucible")
-        return sample_name, None
-
     sds_mfid = sample_sub_dataset_id_map.get(sample_name, mfid.mfid()[0])
 
     sds = Dataset(unique_id = sds_mfid,
