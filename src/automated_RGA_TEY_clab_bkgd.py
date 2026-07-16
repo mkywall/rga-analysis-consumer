@@ -42,7 +42,7 @@ def main(directory = './', SAVE_IMAGES = True):
     # Build dictionary: group_name -> list of unique sample_names
     sample_groups = {}
     for grp, subdf in df_all_groups.groupby('group_name'):
-        sample_groups[grp] = sorted(subdf['sample_name'].unique())
+        sample_groups[grp] = sorted(subdf['sample_name'].dropna().astype(str).unique())
 
     #_____________
 
@@ -307,7 +307,7 @@ def main(directory = './', SAVE_IMAGES = True):
     # the sheet are ignored entirely. Sheet samples with no files at all are
     # treated as not measured in this batch and skipped. Any in-sheet sample
     # that has files but not exactly 1+1 is logged and fails the run.
-    sheet_names = set(df_all_groups['sample_name'].unique())
+    sheet_names = set(df_all_groups['sample_name'].dropna().astype(str))
     sample_pairs = {}  # sample_name -> (rga_file, TEY_file)
     invalid_samples = {}  # sample_name -> (rga_files, TEY_files)
     for sample_name in sorted(sheet_names):
