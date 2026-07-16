@@ -58,6 +58,23 @@ def create_sample_dataset(sample_entry, spot, ds, directory, crucible_client, sa
     sample_id = sample_entry["sample_id"]
     sample_name = sample_entry["sample_name"]
 
+    # Skip empty/placeholder spots so we don't create datasets with no sample name.
+    if sample_name is None or str(sample_name).strip().lower() in ("", "nan", "none"):
+        logger.warning(f"[{spot}] No sample name for this spot, skipping dataset creation")
+        return None
+
+    sample_files = glob.glob(os.path.join(directory, f"{sample_name}_*.txt"))
+    for results_dir in ("Analysis_results-ascii", "Analysis_results-plots"):
+        sample_files += glob.glob(
+            os.path.join(directory, results_dir, "**", f"{sample_name}_*"),
+            recursive=True,
+        )
+
+    # Skip spots with no data files so we don't create empty datasets.
+    if not sample_files:
+        logger.warning(f"[{spot} {sample_name}] No files found for sample, skipping dataset creation")
+        return None
+
     sds_mfid = sample_sub_dataset_id_map.get(sample_name, mfid.mfid()[0])
 
     sds = Dataset(unique_id = sds_mfid,
@@ -67,19 +84,8 @@ def create_sample_dataset(sample_entry, spot, ds, directory, crucible_client, sa
                   project_id = ds['project_id'],   # use project_id of the parent
                   data_type = "automated_RGA_TEY_run")
 
-    sample_files = glob.glob(os.path.join(directory, f"{sample_name}_*.txt"))
-    for results_dir in ("Analysis_results-ascii", "Analysis_results-plots"):
-        sample_files += glob.glob(
-            os.path.join(directory, results_dir, "**", f"{sample_name}_*"),
-            recursive=True,
-        )
-
     # Set the timestamp for the sample dataset based on the modification time of the first file
-    if sample_files:
-        sds.timestamp = datetime.fromtimestamp(os.path.getmtime(sample_files[0]), tz=timezone.utc).isoformat()
-    else:
-        logger.warning(f"[{spot} {sample_name}] No files found for sample dataset, timestamp will not be set")
-
+    sds.timestamp = datetime.fromtimestamp(os.path.getmtime(sample_files[0]), tz=timezone.utc).isoformat()
 
     crucible_client.datasets.create(sds, files_to_upload=sample_files, wait_for_ingestion_response=False)
 
