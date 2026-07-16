@@ -302,12 +302,19 @@ def main(directory = './', SAVE_IMAGES = True):
     for f in rga_files:
         rga_by_sample.setdefault(extract_sample_name(f), []).append(f)
 
-    # Each sample must have exactly one TEY and one RGA file
+    # Validate each sample from the sample sheet (df_all_groups, loaded above):
+    # it must have exactly one TEY and one RGA file. Files for samples not in
+    # the sheet are ignored entirely. Sheet samples with no files at all are
+    # treated as not measured in this batch and skipped. Any in-sheet sample
+    # that has files but not exactly 1+1 is logged and fails the run.
+    sheet_names = set(df_all_groups['sample_name'].unique())
     sample_pairs = {}  # sample_name -> (rga_file, TEY_file)
     invalid_samples = {}  # sample_name -> (rga_files, TEY_files)
-    for sample_name in sorted(set(tey_by_sample) | set(rga_by_sample)):
+    for sample_name in sorted(sheet_names):
         tey_matches = tey_by_sample.get(sample_name, [])
         rga_matches = rga_by_sample.get(sample_name, [])
+        if not tey_matches and not rga_matches:
+            continue
         if len(tey_matches) == 1 and len(rga_matches) == 1:
             sample_pairs[sample_name] = (rga_matches[0], tey_matches[0])
         else:
@@ -315,7 +322,8 @@ def main(directory = './', SAVE_IMAGES = True):
 
     if invalid_samples:
         summary_lines = [
-            f"Found {len(invalid_samples)} sample(s) without exactly 1 TEY and 1 RGA file:"
+            f"{len(invalid_samples)} sample sheet sample(s) failed validation "
+            f"(expected exactly 1 TEY and 1 RGA file):"
         ]
         for sample_name, (rga_matches, tey_matches) in invalid_samples.items():
             summary_lines.append(
