@@ -2,6 +2,7 @@
 print("importing packages")
 from concurrent.futures import ThreadPoolExecutor
 import os
+import shutil
 import json
 
 from crucible import CrucibleClient
@@ -129,7 +130,10 @@ def run_rga_analysis(ch, method, body, connection):
     raw_mfid  = message['dsid']
 
     print(f"received message {message} .. starting processing")
-    
+
+    data_zip = None
+    directory = None
+
     try:
         # get the dataset SQL record
         og_dataset = client.datasets.get(raw_mfid, include_metadata=True)
@@ -167,9 +171,29 @@ def run_rga_analysis(ch, method, body, connection):
                 routing_key='rga-analysis-failed',                                                                                               
                 body=json.dumps(message)                                                                                                               
             )                                                                                                                                          
-            ch.basic_ack(delivery_tag=method.delivery_tag)                                                  
-        
-        connection.add_callback_threadsafe(on_failure)   
+            ch.basic_ack(delivery_tag=method.delivery_tag)
+
+        connection.add_callback_threadsafe(on_failure)
+
+    finally:
+        # Clean up the downloaded zip and extracted folder regardless of outcome
+        if data_zip and os.path.isfile(data_zip):
+            try:
+                os.remove(data_zip)
+                logger.info(f"Removed zip file: {data_zip}")
+            except OSError as e:
+                logger.warning(f"Could not remove zip file {data_zip}: {e}")
+
+        if data_zip:
+            # get_raw_data may return a nested subfolder, so delete the top-level
+            # extraction root derived from the zip name.
+            extract_root = os.path.basename(data_zip).removesuffix(".zip")
+            if os.path.isdir(extract_root):
+                try:
+                    shutil.rmtree(extract_root)
+                    logger.info(f"Removed extracted folder: {extract_root}")
+                except OSError as e:
+                    logger.warning(f"Could not remove extracted folder {extract_root}: {e}")
 
 
 def callback(ch, method, properties, body):
