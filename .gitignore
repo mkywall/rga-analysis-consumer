@@ -1,4 +1,6 @@
 # Python-generated files
+**.ipynb
+**.ipynb_checkpoints
 __pycache__/
 *.py[oc]
 build/
@@ -8,3 +10,6 @@ wheels/
 
 # Virtual environments
 .venv
+
+# test data
+10k_RGA_batch_run_example

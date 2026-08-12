@@ -8,11 +8,11 @@ import json
 from crucible import CrucibleClient
 from crucible.models import Dataset
 import mfid
-import glob
 from datetime import datetime, timezone
 
 import threading
-from utils import setup_pika_client, get_raw_data, get_secret
+import rga_batch
+from utils import setup_pika_client, get_raw_data, get_secret, sanitize_metadata
 from dotenv import load_dotenv
 import logging
 
@@ -55,26 +55,61 @@ def fetch_existing_child_map(crucible_client, parent_id):
     return dict(results)
 
 
-def create_sample_dataset(sample_entry, spot, ds, directory, crucible_client, sample_sub_dataset_id_map, area_by_sample):
+def is_empty_spot(sample_name):
+    return sample_name is None or str(sample_name).strip().lower() in ("", "nan", "none")
+
+
+def validate_sample_files(sample_dictionary, directory):
+    """
+    Check every sample on the holder has exactly one TEY and one RGA file before
+    anything is uploaded, so a bad batch fails with no partial children created.
+
+    Returns the set of sample names that were measured in this batch.
+    """
+    measured = set()
+    invalid = []
+
+    for spot, entry in sample_dictionary.items():
+        sample_name = entry["sample_name"]
+        if is_empty_spot(sample_name):
+            continue
+
+        tey_files, rga_files = rga_batch.match_sample_files(sample_name, directory)
+
+        if not tey_files and not rga_files:
+            logger.info(f"[{spot} {sample_name}] not measured in this batch, skipping")
+        elif len(tey_files) == 1 and len(rga_files) == 1:
+            measured.add(sample_name)
+        else:
+            invalid.append((spot, sample_name, tey_files, rga_files))
+
+    if invalid:
+        lines = ["Expected exactly 1 TEY and 1 RGA file per sample, found:"]
+        for spot, sample_name, tey_files, rga_files in invalid:
+            lines.append(f"  [{spot}] {sample_name}: {len(tey_files)} TEY, {len(rga_files)} RGA")
+            for f in tey_files + rga_files:
+                lines.append(f"    {os.path.basename(f)}")
+        raise ValueError("\n".join(lines))
+
+    return measured
+
+
+def create_sample_dataset(sample_entry, spot, ds, directory, crucible_client, sample_sub_dataset_id_map, measured_samples):
     sample_id = sample_entry["sample_id"]
     sample_name = sample_entry["sample_name"]
 
     # Skip empty/placeholder spots so we don't create datasets with no sample name.
-    if sample_name is None or str(sample_name).strip().lower() in ("", "nan", "none"):
+    if is_empty_spot(sample_name):
         logger.warning(f"[{spot}] No sample name for this spot, skipping dataset creation")
         return None
 
-    sample_files = glob.glob(os.path.join(directory, f"{sample_name}_*.txt"))
-    for results_dir in ("Analysis_results-ascii", "Analysis_results-plots"):
-        sample_files += glob.glob(
-            os.path.join(directory, results_dir, "**", f"{sample_name}_*"),
-            recursive=True,
-        )
-
     # Skip spots with no data files so we don't create empty datasets.
-    if not sample_files:
+    if sample_name not in measured_samples:
         logger.warning(f"[{spot} {sample_name}] No files found for sample, skipping dataset creation")
         return None
+
+    m = rga_batch.process_sample(sample_name, directory=directory, overwrite=True)
+    sample_files = m.files
 
     sds_mfid = sample_sub_dataset_id_map.get(sample_name, mfid.mfid()[0])
 
@@ -83,10 +118,13 @@ def create_sample_dataset(sample_entry, spot, ds, directory, crucible_client, sa
                   instrument_name = "ALS-BL12012",
                   measurement = "automated_RGA_TEY_run", # TODO - swap to RGA/TEY?
                   project_id = ds['project_id'],   # use project_id of the parent
-                  data_type = "automated_RGA_TEY_run")
+                  data_type = "automated_RGA_TEY_run",
+                  scientific_metadata = sanitize_metadata(m.metadata))
 
-    # Set the timestamp for the sample dataset based on the modification time of the first file
-    sds.timestamp = datetime.fromtimestamp(os.path.getmtime(sample_files[0]), tz=timezone.utc).isoformat()
+    # Timestamp off the raw RGA file: the derived files were written moments ago and
+    # would record the processing time rather than the measurement time.
+    rga_raw = os.path.join(directory, m.metadata["rga_source"])
+    sds.timestamp = datetime.fromtimestamp(os.path.getmtime(rga_raw), tz=timezone.utc).isoformat()
 
     crucible_client.datasets.create(sds, files_to_upload=sample_files, wait_for_ingestion_response=False)
 
@@ -94,7 +132,7 @@ def create_sample_dataset(sample_entry, spot, ds, directory, crucible_client, sa
     crucible_client.samples.add_dataset(sample_id, sds.unique_id)
 
     # Record the corrected outgassing area on the sample's scientific metadata
-    outgas_area = area_by_sample.get(sample_name) if area_by_sample else None
+    outgas_area = m.outgas_area
     if outgas_area is not None:
         md = {
             'outgas_area': float(outgas_area),
@@ -105,21 +143,14 @@ def create_sample_dataset(sample_entry, spot, ds, directory, crucible_client, sa
     else:
         logger.warning(f"  [{spot}] {sample_name} no outgas_area found, skipping metadata update")
 
-    thumbnail_names = [
-        f"MS/{sample_name}_MS_log.png",
-        f"MS(t)_averaged/{sample_name}_MS_t_averaged.png",
-        f"TEY_normalized/{sample_name}_TEY_normalized.png",
-        f"TEY_normalized_averaged/{sample_name}_TEY_normalized_averaged.png",
-        f"Total_outgassing_averaged/{sample_name}_total_outgassing_averaged.png",
-    ]
-    for tn_name in thumbnail_names:
-        tn_path = os.path.join(directory, "Analysis_results-plots", tn_name)
+    if m.thumbnail:
+        tn_name = os.path.basename(m.thumbnail)
         try:
-            with open(tn_path, "rb"):
+            with open(m.thumbnail, "rb"):
                 pass
-            crucible_client.datasets.add_thumbnail(dsid=sds_mfid, image=tn_path, thumbnail_name=tn_name)
+            crucible_client.datasets.add_thumbnail(dsid=sds_mfid, image=m.thumbnail, thumbnail_name=tn_name)
         except FileNotFoundError:
-            logger.warning(f"  [warn] thumbnail not found, skipping: {tn_path}")
+            logger.warning(f"  [warn] thumbnail not found, skipping: {m.thumbnail}")
 
     logger.info(f"  [{spot}] {sample_name} → {sds.unique_id}")
     return sample_name, sds_mfid
@@ -141,21 +172,27 @@ def run_rga_analysis(ch, method, body, connection):
         # get the raw data files
         data_zip, directory = get_raw_data(client, raw_mfid)
 
-        # run Kas's analysis script
-        import automated_RGA_TEY_clab_bkgd as automated_RGA_TEY_clab_bkgd
-        area_by_sample = automated_RGA_TEY_clab_bkgd.main(directory)
-        logger.info("Analysis script complete")
+        sample_dictionary = og_dataset['scientific_metadata']['samples']
+        sample_positions = list(sample_dictionary.keys())
+
+        # Validate before anything is uploaded, so a bad batch creates no children.
+        measured_samples = validate_sample_files(sample_dictionary, directory)
+        logger.info(f"{len(measured_samples)} samples measured in this batch")
 
         # upload to crucible -  following Ed's workflow
         logger.info('Fetching existing child map...')
         sample_sub_dataset_id_map = fetch_existing_child_map(client, raw_mfid)
-        sample_dictionary = og_dataset['scientific_metadata']['samples']
-        sample_positions = list(sample_dictionary.keys())
 
-        logger.info(f"Creating sample datasets...")
+        logger.info(f"Analyzing and creating sample datasets...")
         with ThreadPoolExecutor(max_workers=8) as executor:
             child_results = list(executor.map(
-                        lambda sample_position: create_sample_dataset(sample_dictionary[sample_position], sample_position, og_dataset, directory, client, sample_sub_dataset_id_map, area_by_sample),
+                        lambda sample_position: create_sample_dataset(sample_dictionary[sample_position],
+                                                                      sample_position, 
+                                                                      og_dataset,
+                                                                      directory,
+                                                                      client,
+                                                                      sample_sub_dataset_id_map,
+                                                                      measured_samples),
                         sample_positions,
                     ))
 
