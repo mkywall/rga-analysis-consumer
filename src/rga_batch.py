@@ -602,13 +602,14 @@ def process_sample(sample, directory, outdir=None, overwrite=False,
                   for k, v in dmeta.items()}
 
     m.thumbnail = None
+    pdf_path = None
     if save_plots:
         plot_path = os.path.join(outdir, f"{sample}_multipanel.png")
         pdf_path = os.path.join(outdir, f"{sample}_multipanel.pdf")
         try:
-            for output in [plot_path, pdf_path]:
-                m.plot_multipanel(path=output)
+            fig = m.plot_multipanel(path=plot_path)
             m.thumbnail = plot_path
+            fig.savefig(pdf_path, dpi=300, bbox_inches="tight")
             if verbose:
                 print(f"[{sample}] wrote {sample}_multipanel.png and {sample}_multipanel.pdf")
         except Exception as e:
@@ -620,7 +621,7 @@ def process_sample(sample, directory, outdir=None, overwrite=False,
     m.files = [os.path.join(directory, meta["tey_source"]),
                os.path.join(directory, meta["rga_source"])]
     m.files += [p for p in paths.values() if os.path.exists(p)]
-    if save_plots:
+    if pdf_path and os.path.exists(pdf_path):
         m.files.append(pdf_path)
     return m
 

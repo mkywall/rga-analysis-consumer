@@ -118,15 +118,14 @@ def create_sample_dataset(sample_entry, spot, ds, directory, crucible_client, sa
                   instrument_name = "ALS-BL12012",
                   measurement = "automated_RGA_TEY_run", # TODO - swap to RGA/TEY?
                   project_id = ds['project_id'],   # use project_id of the parent
-                  data_type = "automated_RGA_TEY_run",
-                  scientific_metadata = sanitize_metadata(m.metadata))
+                  data_type = "automated_RGA_TEY_run")
 
     # Timestamp off the raw RGA file: the derived files were written moments ago and
     # would record the processing time rather than the measurement time.
     rga_raw = os.path.join(directory, m.metadata["rga_source"])
     sds.timestamp = datetime.fromtimestamp(os.path.getmtime(rga_raw), tz=timezone.utc).isoformat()
 
-    crucible_client.datasets.create(sds, files_to_upload=sample_files, wait_for_ingestion_response=False)
+    crucible_client.datasets.create(sds, files_to_upload=sample_files, scientific_metadata = sanitize_metadata(m.metadata), wait_for_ingestion_response=False)
 
     crucible_client.datasets.link_parent_child(ds['unique_id'], sds.unique_id)
     crucible_client.samples.add_dataset(sample_id, sds.unique_id)
