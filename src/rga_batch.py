@@ -618,8 +618,6 @@ def process_sample(sample, directory, outdir=None, overwrite=False,
     m.files = [os.path.join(directory, meta["tey_source"]),
                os.path.join(directory, meta["rga_source"])]
     m.files += [p for p in paths.values() if os.path.exists(p)]
-    if m.thumbnail:
-        m.files.append(m.thumbnail)
 
     return m
 
