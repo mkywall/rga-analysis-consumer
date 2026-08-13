@@ -604,11 +604,13 @@ def process_sample(sample, directory, outdir=None, overwrite=False,
     m.thumbnail = None
     if save_plots:
         plot_path = os.path.join(outdir, f"{sample}_multipanel.png")
+        pdf_path = os.path.join(outdir, f"{sample}_multipanel.pdf")
         try:
-            m.plot_multipanel(path=plot_path)
+            for output in [plot_path, pdf_path]:
+                m.plot_multipanel(path=output)
             m.thumbnail = plot_path
             if verbose:
-                print(f"[{sample}] wrote {sample}_multipanel.png")
+                print(f"[{sample}] wrote {sample}_multipanel.png and {sample}_multipanel.pdf")
         except Exception as e:
             # A figure failure must not cost us the data files.
             warnings.warn(f"[{sample}] plotting failed: {e}", stacklevel=2)
@@ -618,7 +620,8 @@ def process_sample(sample, directory, outdir=None, overwrite=False,
     m.files = [os.path.join(directory, meta["tey_source"]),
                os.path.join(directory, meta["rga_source"])]
     m.files += [p for p in paths.values() if os.path.exists(p)]
-
+    if save_plots:
+        m.files.append(pdf_path)
     return m
 
 
