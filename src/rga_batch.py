@@ -531,8 +531,6 @@ def process_sample(sample, directory, outdir=None, overwrite=False,
         )
         _write_tey(paths["TEY"], tey_time, tey_signal, shutter, meta)
         _write_ms_t(paths["MS_t"], time, mz, pressure, meta)
-        if verbose:
-            print(f"[{sample}] parsed raw -> wrote {sample}_TEY.txt, {sample}_MS_t.txt")
 
     m = RGAMeasurement(sample, time, mz, pressure,
                        np.asarray(tey_time) + t_offset, tey_signal, shutter, meta)
@@ -543,11 +541,6 @@ def process_sample(sample, directory, outdir=None, overwrite=False,
             m.background_correct(window=window, gap_before=gap_before,
                                  gap_after=gap_after)
             corrected = True
-            if verbose:
-                kind = "linear" if m.bg_deg == 1 else "flat offset"
-                print(f"[{sample}] background corrected ({kind}, "
-                      f"{m.bg_n_before}+{m.bg_n_after} scans); beam on "
-                      f"{m.open_time:.1f}–{m.close_time:.1f} s")
         except Exception as e:
             warnings.warn(f"[{sample}] background correction failed: {e}", stacklevel=2)
 
