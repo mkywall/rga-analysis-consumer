@@ -46,13 +46,20 @@ client = CrucibleClient(api_url=crucible_api_url, api_key=crucible_api_key)
 # Functions  ===========================
 def fetch_existing_child_map(crucible_client, parent_id):
     def fetch_sample(sds):
-        sample = crucible_client.samples.list(dataset_id=sds["unique_id"])[0]
-        return sample["sample_name"], sds["unique_id"]
+        # A child whose sample link never got made is not usable as a rerun target,
+        # but it must not take the whole batch down with it.
+        samples = crucible_client.samples.list(dataset_id=sds["unique_id"])
+        if not samples:
+            logger.warning(f"Existing child {sds['unique_id']} has no linked sample, ignoring")
+            return None
+        return samples[0]["sample_name"], sds["unique_id"]
 
-    children = crucible_client.datasets.list_children(parent_id)
+    # limit=None: a truncated page would hide existing children and send them
+    # back down the create path, which 409s.
+    children = crucible_client.datasets.list_children(parent_id, limit=None)
     with ThreadPoolExecutor(max_workers=8) as executor:
         results = executor.map(fetch_sample, children)
-    return dict(results)
+    return dict(r for r in results if r is not None)
 
 
 def is_empty_spot(sample_name):
@@ -111,31 +118,42 @@ def create_sample_dataset(sample_entry, spot, ds, directory, crucible_client, sa
     m = rga_batch.process_sample(sample_name, directory=directory, overwrite=True)
     sample_files = m.files
 
-    sds_mfid = sample_sub_dataset_id_map.get(sample_name, mfid.mfid()[0])
-
-    sds = Dataset(unique_id = sds_mfid,
-                  dataset_name = f"RGATEY_{ds['dataset_name']}_{spot}_{sample_name}",
-                  instrument_name = "ALS-BL12012",
-                  measurement = "automated_RGA_TEY_run", # TODO - swap to RGA/TEY?
-                  project_id = ds['project_id'],   # use project_id of the parent
-                  data_type = "automated_RGA_TEY_run")
+    existing_mfid = sample_sub_dataset_id_map.get(sample_name)
+    sds_mfid = existing_mfid or mfid.mfid()[0]
 
     # Timestamp off the raw RGA file: the derived files were written moments ago and
     # would record the processing time rather than the measurement time.
     rga_raw = os.path.join(directory, m.metadata["rga_source"])
-    sds.timestamp = datetime.fromtimestamp(os.path.getmtime(rga_raw), tz=timezone.utc).isoformat()
+    timestamp = datetime.fromtimestamp(os.path.getmtime(rga_raw), tz=timezone.utc).isoformat()
 
-    crucible_client.datasets.create(sds, files_to_upload=sample_files, scientific_metadata = sanitize_metadata(m.metadata), wait_for_ingestion_response=False)
+    if existing_mfid:
+        # POSTing a known id returns 409, so refresh in place. The record came out of
+        # this batch's child list, so the parent and sample links already exist. Files
+        # are left alone: add_file_to_dataset appends rather than replaces.
+        crucible_client.datasets.update(sds_mfid, timestamp=timestamp)
+        crucible_client.datasets.update_scientific_metadata(sds_mfid, sanitize_metadata(m.metadata))
+        logger.info(f"  [{spot}] {sample_name} already exists, updated {sds_mfid}")
+    else:
+        sds = Dataset(unique_id = sds_mfid,
+                      dataset_name = f"RGATEY_{ds['dataset_name']}_{spot}_{sample_name}",
+                      instrument_name = "ALS-BL12012",
+                      measurement = "automated_RGA_TEY_run", # TODO - swap to RGA/TEY?
+                      project_id = ds['project_id'],   # use project_id of the parent
+                      data_type = "automated_RGA_TEY_run")
+        sds.timestamp = timestamp
 
-    crucible_client.datasets.link_parent_child(ds['unique_id'], sds.unique_id)
-    crucible_client.samples.add_dataset(sample_id, sds.unique_id)
+        crucible_client.datasets.create(sds, files_to_upload=sample_files, scientific_metadata = sanitize_metadata(m.metadata), wait_for_ingestion_response=False)
+
+        crucible_client.datasets.link_parent_child(ds['unique_id'], sds.unique_id)
+        crucible_client.samples.add_dataset(sample_id, sds.unique_id)
+        logger.info(f"  [{spot}] {sample_name} → {sds_mfid}")
 
     # Record the corrected outgassing area on the sample's scientific metadata
     outgas_area = m.outgas_area
     if outgas_area is not None:
         md = {
             'outgas_area': float(outgas_area),
-            'outgas_area_analysis_reference': f'dataset: {sds.unique_id}',
+            'outgas_area_analysis_reference': f'dataset: {sds_mfid}',
         }
         crucible_client.samples.update_scientific_metadata(sample_id, metadata=md)
         logger.info(f"  [{spot}] {sample_name} outgas_area={outgas_area:.3e} → sample {sample_id}")
@@ -151,7 +169,6 @@ def create_sample_dataset(sample_entry, spot, ds, directory, crucible_client, sa
         except FileNotFoundError:
             logger.warning(f"  [warn] thumbnail not found, skipping: {m.thumbnail}")
 
-    logger.info(f"  [{spot}] {sample_name} → {sds.unique_id}")
     return sample_name, sds_mfid
 
 
