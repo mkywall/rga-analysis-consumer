@@ -482,7 +482,7 @@ class RGAMeasurement(PlotMixin):
 
 def process_sample(sample, directory, outdir=None, overwrite=False,
                    background=True, window=30.0, gap_before=5.0, gap_after=10.0,
-                   t_offset=0.0, mz_range=None, save_plots=True, verbose=True):
+                   t_offset=0.0, mz_range=None, save_plots=True, verbose=False):
     """
     Process one sample end to end, write the output files, return the measurement.
 
