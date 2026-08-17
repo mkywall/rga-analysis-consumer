@@ -183,7 +183,7 @@ def run_rga_analysis(ch, method, body, connection):
         sample_sub_dataset_id_map = fetch_existing_child_map(client, raw_mfid)
 
         logger.info(f"Analyzing and creating sample datasets...")
-        with ThreadPoolExecutor(max_workers=8) as executor:
+        with ThreadPoolExecutor(max_workers=3) as executor:
             child_results = list(executor.map(
                         lambda sample_position: create_sample_dataset(sample_dictionary[sample_position],
                                                                       sample_position, 
